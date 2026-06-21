@@ -133,11 +133,27 @@ jobs:
             abort "::error::Requested #{expected_suffix} is not the staged #{container_name} image; found #{image.inspect}"
           end
 
+          before_digest, actual_digest = image.split("@", 2)
+          unless actual_digest == digest
+            abort "::error::Staged image digest mismatch; expected #{digest.inspect}, found #{actual_digest.inspect}"
+          end
+
+          last_slash = before_digest.rindex("/") || -1
+          tag_separator = before_digest.rindex(":")
+          unless tag_separator && tag_separator > last_slash
+            abort "::error::Staged image must include a tag before the digest; found #{image.inspect}"
+          end
+
+          repository = before_digest[0...tag_separator]
+          digest_ref = "#{repository}@#{digest}"
+
           File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
             output.puts "image=#{image}"
+            output.puts "digest_ref=#{digest_ref}"
           end
 
           puts "Verified staged image: #{image}"
+          puts "Canonical digest reference: #{digest_ref}"
           RUBY
 
       - name: Authenticate to GCP (OIDC, no static keys)
@@ -157,7 +173,7 @@ jobs:
 
       - name: Verify staged image exists in registry
         env:
-          IMAGE_REF: ${{ steps.staging-image.outputs.image }}
+          IMAGE_REF: ${{ steps.staging-image.outputs.digest_ref }}
         run: docker buildx imagetools inspect "$IMAGE_REF"
 
       - name: Install Cosign
@@ -165,7 +181,7 @@ jobs:
 
       - name: Verify staged image signature
         env:
-          IMAGE_REF: ${{ steps.staging-image.outputs.image }}
+          IMAGE_REF: ${{ steps.staging-image.outputs.digest_ref }}
           COSIGN_CERTIFICATE_IDENTITY: ${{ inputs.cosign-certificate-identity != '' && inputs.cosign-certificate-identity || 'https://github.com/sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml@refs/heads/main' }}
         run: |
           cosign verify \
@@ -176,7 +192,7 @@ jobs:
       - name: Verify staged image provenance attestation
         env:
           GH_TOKEN: ${{ github.token }}
-          IMAGE_REF: ${{ steps.staging-image.outputs.image }}
+          IMAGE_REF: ${{ steps.staging-image.outputs.digest_ref }}
           ATTESTATION_REPO: ${{ inputs.attestation-repo != '' && inputs.attestation-repo || github.repository }}
           SIGNER_WORKFLOW: ${{ inputs.signer-workflow }}
         run: |
