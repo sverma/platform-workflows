@@ -27,6 +27,9 @@ on:
       go-version:
         type: string
         default: "1.24"
+      coverage-threshold:
+        type: number
+        default: 0
       build-context:
         type: string
         default: "."
@@ -59,12 +62,13 @@ concurrency:
 jobs:
   ci-checks:
     name: ci-checks
-    uses: sverma/platform-workflows/.github/workflows/reusable-ci-checks.yaml@v1.0.8
+    uses: sverma/platform-workflows/.github/workflows/reusable-ci-checks.yaml@v1.0.9
     permissions:
       contents: read
       security-events: write
     with:
       go-version: ${{ inputs.go-version }}
+      coverage-threshold: ${{ inputs.coverage-threshold }}
 
   version:
     name: compute-version
@@ -88,7 +92,7 @@ jobs:
   build-sign:
     name: build-sign
     needs: version
-    uses: sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml@v1.0.8
+    uses: sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml@v1.0.9
     permissions:
       contents: read
       id-token: write

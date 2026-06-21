@@ -9,6 +9,10 @@ on:
         description: Go toolchain version
         type: string
         default: "1.24"
+      coverage-threshold:
+        description: Minimum total Go statement coverage percentage. Set 0 to report only.
+        type: number
+        default: 0
 
 permissions:
   contents: read
@@ -52,6 +56,51 @@ jobs:
 
       - name: Unit tests (race detector + coverage)
         run: go test ./... -race -covermode=atomic -coverprofile=coverage.out
+
+      - name: Coverage summary and threshold
+        env:
+          COVERAGE_THRESHOLD: ${{ inputs.coverage-threshold }}
+        run: |
+          go tool cover -func=coverage.out | tee coverage.txt
+          total="$(awk '/^total:/ { sub(/%$/, "", $3); print $3 }' coverage.txt)"
+
+          if [ -z "$total" ]; then
+            echo "::error::Could not determine total coverage."
+            exit 1
+          fi
+
+          {
+            echo "## Go Coverage"
+            echo ""
+            echo "- Total: ${total}%"
+            echo "- Threshold: ${COVERAGE_THRESHOLD}%"
+            echo ""
+            echo "<details><summary>Function coverage</summary>"
+            echo ""
+            echo '```text'
+            cat coverage.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          awk -v total="$total" -v threshold="$COVERAGE_THRESHOLD" 'BEGIN {
+            if (threshold > 0 && total + 0 < threshold + 0) {
+              printf("::error::Total coverage %.1f%% is below threshold %.1f%%\n", total, threshold)
+              exit 1
+            }
+            printf("Total coverage %.1f%% meets threshold %.1f%%\n", total, threshold)
+          }'
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: go-coverage
+          path: |
+            coverage.out
+            coverage.txt
+          if-no-files-found: warn
 
       - name: govulncheck (Go-aware CVE detection)
         continue-on-error: true
