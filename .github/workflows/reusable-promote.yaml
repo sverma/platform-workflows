@@ -145,6 +145,14 @@ jobs:
           end
 
           repository = before_digest[0...tag_separator]
+          if repository.nil? || repository.empty?
+            abort "::error::Staged image repository is empty; found #{image.inspect}. Re-run release with platform-workflows v1.0.7 or newer."
+          end
+
+          unless repository.match?(/\A[^:\/\s]+(?:\/[^:\/\s]+)+\z/)
+            abort "::error::Staged image repository is malformed: #{repository.inspect}"
+          end
+
           digest_ref = "#{repository}@#{digest}"
 
           File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|

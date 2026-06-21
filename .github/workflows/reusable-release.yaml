@@ -59,7 +59,7 @@ concurrency:
 jobs:
   ci-checks:
     name: ci-checks
-    uses: sverma/platform-workflows/.github/workflows/reusable-ci-checks.yaml@v1.0.6
+    uses: sverma/platform-workflows/.github/workflows/reusable-ci-checks.yaml@v1.0.7
     permissions:
       contents: read
       security-events: write
@@ -88,7 +88,7 @@ jobs:
   build-sign:
     name: build-sign
     needs: version
-    uses: sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml@v1.0.6
+    uses: sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml@v1.0.7
     permissions:
       contents: read
       id-token: write
@@ -123,14 +123,28 @@ jobs:
         working-directory: ${{ inputs.gitops-app-path }}/overlays/${{ inputs.staging-overlay }}
         env:
           CONTAINER_NAME: ${{ inputs.container-name }}
-          NEW_IMAGE: ${{ needs.build-sign.outputs.image }}:${{ needs.version.outputs.tag }}@${{ needs.build-sign.outputs.digest }}
+          IMAGE_REPOSITORY: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/${{ inputs.image-name }}
+          IMAGE_TAG: ${{ needs.version.outputs.tag }}
+          IMAGE_DIGEST: ${{ needs.build-sign.outputs.digest }}
         run: |
           ruby <<'RUBY'
           require "yaml"
 
           path = "image.yaml"
           container_name = ENV.fetch("CONTAINER_NAME")
-          new_image = ENV.fetch("NEW_IMAGE")
+          image_repository = ENV.fetch("IMAGE_REPOSITORY")
+          image_tag = ENV.fetch("IMAGE_TAG")
+          image_digest = ENV.fetch("IMAGE_DIGEST")
+
+          unless image_repository.match?(/\A[^:\/\s]+(?:\/[^:\/\s]+)+\z/)
+            abort "::error::IMAGE_REPOSITORY is malformed or empty: #{image_repository.inspect}"
+          end
+
+          unless image_digest.match?(/\Asha256:[0-9a-f]{64}\z/)
+            abort "::error::IMAGE_DIGEST is malformed or empty: #{image_digest.inspect}"
+          end
+
+          new_image = "#{image_repository}:#{image_tag}@#{image_digest}"
           doc = YAML.load_file(path)
 
           unless doc.is_a?(Hash) && doc["kind"] == "Deployment"
@@ -160,14 +174,16 @@ jobs:
         working-directory: ${{ inputs.gitops-app-path }}/overlays/${{ inputs.staging-overlay }}
         env:
           CONTAINER_NAME: ${{ inputs.container-name }}
-          EXPECTED_IMAGE: ${{ needs.build-sign.outputs.image }}:${{ needs.version.outputs.tag }}@${{ needs.build-sign.outputs.digest }}
+          IMAGE_REPOSITORY: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/${{ inputs.image-name }}
+          IMAGE_TAG: ${{ needs.version.outputs.tag }}
+          IMAGE_DIGEST: ${{ needs.build-sign.outputs.digest }}
         run: |
           ruby <<'RUBY'
           require "yaml"
 
           path = "image.yaml"
           container_name = ENV.fetch("CONTAINER_NAME")
-          expected_image = ENV.fetch("EXPECTED_IMAGE")
+          expected_image = "#{ENV.fetch("IMAGE_REPOSITORY")}:#{ENV.fetch("IMAGE_TAG")}@#{ENV.fetch("IMAGE_DIGEST")}"
           doc = YAML.load_file(path)
           containers = doc.dig("spec", "template", "spec", "containers")
           image = containers&.find { |candidate| candidate.is_a?(Hash) && candidate["name"] == container_name }&.fetch("image", nil)
