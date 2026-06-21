@@ -34,6 +34,10 @@ on:
         description: Optional expected keyless Cosign certificate identity.
         type: string
         default: ""
+      cosign-certificate-identity-regexp:
+        description: Optional expected keyless Cosign certificate identity regexp. Used when cosign-certificate-identity is empty.
+        type: string
+        default: '^https://github\.com/sverma/platform-workflows/\.github/workflows/reusable-build-sign\.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
       attestation-repo:
         description: Repository that owns GitHub artifact attestations. Defaults to the caller repository.
         type: string
@@ -190,12 +194,20 @@ jobs:
       - name: Verify staged image signature
         env:
           IMAGE_REF: ${{ steps.staging-image.outputs.digest_ref }}
-          COSIGN_CERTIFICATE_IDENTITY: ${{ inputs.cosign-certificate-identity != '' && inputs.cosign-certificate-identity || 'https://github.com/sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml@refs/heads/main' }}
+          COSIGN_CERTIFICATE_IDENTITY: ${{ inputs.cosign-certificate-identity }}
+          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ inputs.cosign-certificate-identity-regexp }}
         run: |
-          cosign verify \
-            --certificate-identity "$COSIGN_CERTIFICATE_IDENTITY" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "$IMAGE_REF"
+          if [ -n "$COSIGN_CERTIFICATE_IDENTITY" ]; then
+            cosign verify \
+              --certificate-identity "$COSIGN_CERTIFICATE_IDENTITY" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$IMAGE_REF"
+          else
+            cosign verify \
+              --certificate-identity-regexp "$COSIGN_CERTIFICATE_IDENTITY_REGEXP" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$IMAGE_REF"
+          fi
 
       - name: Verify staged image provenance attestation
         env:
