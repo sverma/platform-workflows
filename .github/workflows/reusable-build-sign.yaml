@@ -110,12 +110,6 @@ jobs:
           provenance: ${{ inputs.push && 'mode=max' || 'false' }}
           sbom: ${{ inputs.push }}
 
-      - name: Registry credentials for Trivy
-        if: ${{ inputs.push }}
-        run: |
-          echo "TRIVY_USERNAME=oauth2accesstoken" >> "$GITHUB_ENV"
-          echo "TRIVY_PASSWORD=$(gcloud auth print-access-token)" >> "$GITHUB_ENV"
-
       - name: Trivy image scan (blocking on CRITICAL)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -138,4 +132,4 @@ jobs:
         with:
           subject-name: ${{ steps.meta.outputs.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
+          push-to-registry: false

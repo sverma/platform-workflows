@@ -183,8 +183,7 @@ jobs:
           gh attestation verify "oci://$IMAGE_REF" \
             --repo "$ATTESTATION_REPO" \
             --signer-workflow "$SIGNER_WORKFLOW" \
-            --source-ref refs/heads/main \
-            --bundle-from-oci
+            --source-ref refs/heads/main
 
       - name: Pin image (tag + digest) in production overlay
         working-directory: ${{ inputs.gitops-app-path }}/overlays/${{ inputs.production-overlay }}
