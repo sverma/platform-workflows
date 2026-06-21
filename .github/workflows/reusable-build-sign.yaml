@@ -77,6 +77,15 @@ jobs:
         if: ${{ inputs.push }}
         run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
 
+      - name: Docker login for OCI registry clients
+        if: ${{ inputs.push }}
+        run: |
+          gcloud auth print-access-token \
+            | docker login \
+                -u oauth2accesstoken \
+                --password-stdin \
+                https://${{ secrets.GCP_REGION }}-docker.pkg.dev
+
       - name: Compute image reference
         id: meta
         run: |
