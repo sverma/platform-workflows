@@ -59,7 +59,7 @@ concurrency:
 jobs:
   ci-checks:
     name: ci-checks
-    uses: sverma/platform-workflows/.github/workflows/reusable-ci-checks.yaml@v1.0.3
+    uses: sverma/platform-workflows/.github/workflows/reusable-ci-checks.yaml@v1.0.4
     permissions:
       contents: read
       security-events: write
@@ -88,7 +88,7 @@ jobs:
   build-sign:
     name: build-sign
     needs: version
-    uses: sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml@v1.0.3
+    uses: sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml@v1.0.4
     permissions:
       contents: read
       id-token: write
