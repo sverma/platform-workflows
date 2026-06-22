@@ -17,10 +17,22 @@ inputs:
     description: kubeconform version installed with go install.
     required: false
     default: "v0.6.7"
+  conftest-version:
+    description: Conftest version installed with go install when policy paths are configured.
+    required: false
+    default: "v0.56.0"
   go-version:
     description: Go version used to install validation tools.
     required: false
     default: "1.24"
+  policy-paths:
+    description: Optional newline-separated Conftest policy directories or files.
+    required: false
+    default: ""
+  policy-mode:
+    description: Policy behavior. Use enforce, audit, or skip.
+    required: false
+    default: "enforce"
   strict:
     description: Run kubeconform in strict mode.
     required: false
@@ -53,6 +65,9 @@ runs:
       env:
         KUSTOMIZE_VERSION: ${{ inputs.kustomize-version }}
         KUBECONFORM_VERSION: ${{ inputs.kubeconform-version }}
+        CONFTEST_VERSION: ${{ inputs.conftest-version }}
+        POLICY_PATHS: ${{ inputs.policy-paths }}
+        POLICY_MODE: ${{ inputs.policy-mode }}
       run: |
         set -euo pipefail
 
@@ -67,6 +82,10 @@ runs:
         GOBIN="$tools_dir" go install "sigs.k8s.io/kustomize/kustomize/v5@${KUSTOMIZE_VERSION}"
         GOBIN="$tools_dir" go install "github.com/yannh/kubeconform/cmd/kubeconform@${KUBECONFORM_VERSION}"
 
+        if [ "$POLICY_MODE" != "skip" ] && [ -n "$(printf '%s' "$POLICY_PATHS" | tr -d '[:space:]')" ]; then
+          GOBIN="$tools_dir" go install "github.com/open-policy-agent/conftest@${CONFTEST_VERSION}"
+        fi
+
         echo "$tools_dir" >> "$GITHUB_PATH"
 
     - name: Render and validate GitOps overlays
@@ -78,6 +97,8 @@ runs:
         STRICT: ${{ inputs.strict }}
         IGNORE_MISSING_SCHEMAS: ${{ inputs.ignore-missing-schemas }}
         SCHEMA_LOCATIONS: ${{ inputs.schema-locations }}
+        POLICY_PATHS: ${{ inputs.policy-paths }}
+        POLICY_MODE: ${{ inputs.policy-mode }}
       run: |
         set -euo pipefail
 
@@ -96,11 +117,33 @@ runs:
           exit 1
         fi
 
+        if [ "$POLICY_MODE" != "enforce" ] && [ "$POLICY_MODE" != "audit" ] && [ "$POLICY_MODE" != "skip" ]; then
+          echo "::error::policy-mode must be one of: enforce, audit, skip"
+          exit 1
+        fi
+
+        mapfile -t policy_paths < <(
+          printf '%s\n' "$POLICY_PATHS" |
+            sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
+            awk 'NF && $1 !~ /^#/'
+        )
+
+        conftest_args=()
+        if [ "$POLICY_MODE" != "skip" ] && [ "${#policy_paths[@]}" -gt 0 ]; then
+          for policy_path in "${policy_paths[@]}"; do
+            if [ ! -e "$policy_path" ]; then
+              echo "::error::Configured policy path does not exist: $policy_path"
+              exit 1
+            fi
+            conftest_args+=(--policy "$policy_path")
+          done
+        fi
+
         {
           echo "## GitOps Validation"
           echo ""
-          echo "| Overlay | YAML | Render | Schema |"
-          echo "| --- | --- | --- | --- |"
+          echo "| Overlay | YAML | Render | Schema | Policy |"
+          echo "| --- | --- | --- | --- | --- |"
         } >> "$GITHUB_STEP_SUMMARY"
 
         for overlay in "${overlays[@]}"; do
@@ -118,8 +161,23 @@ runs:
 
           safe_name="$(printf '%s' "$overlay" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
           rendered_file="${output_dir}/${safe_name}.yaml"
+          metadata_file="${output_dir}/${safe_name}.metadata.json"
 
           kustomize build "$overlay" > "$rendered_file"
+
+          ruby -rjson -e '
+            overlay = ARGV.fetch(0)
+            parts = overlay.split("/")
+            environment =
+              if parts.include?("prod")
+                "prod"
+              elsif parts.include?("stage")
+                "stage"
+              else
+                "unknown"
+              end
+            puts JSON.generate({ "gitops" => { "overlay" => overlay, "environment" => environment } })
+          ' "$overlay" > "$metadata_file"
 
           kubeconform_args=(-summary -kubernetes-version "$KUBERNETES_VERSION")
 
@@ -140,7 +198,22 @@ runs:
 
           kubeconform "${kubeconform_args[@]}" "$rendered_file"
 
-          echo "| \`$overlay\` | pass | pass | pass |" >> "$GITHUB_STEP_SUMMARY"
+          policy_result="skipped"
+          if [ "$POLICY_MODE" != "skip" ] && [ "${#conftest_args[@]}" -gt 0 ]; then
+            if conftest test "$rendered_file" "${conftest_args[@]}" --data "$metadata_file"; then
+              policy_result="pass"
+            else
+              policy_result="fail"
+              if [ "$POLICY_MODE" = "audit" ]; then
+                echo "::warning::Policy audit failed for $overlay"
+              else
+                echo "::error::Policy enforcement failed for $overlay"
+                exit 1
+              fi
+            fi
+          fi
+
+          echo "| \`$overlay\` | pass | pass | pass | ${policy_result} |" >> "$GITHUB_STEP_SUMMARY"
         done
 
         echo "rendered-directory=$output_dir" >> "$GITHUB_OUTPUT"
