@@ -279,7 +279,7 @@ jobs:
           RUBY
 
       - name: Validate production GitOps overlay
-        uses: sverma/platform-workflows/.github/actions/gitops-validate@codex/gitops-policy-pass2
+        uses: sverma/platform-workflows/.github/actions/gitops-validate@v1.3.0
         with:
           overlays: ${{ inputs.gitops-app-path }}/overlays/${{ inputs.production-overlay }}
           kubernetes-version: ${{ inputs.gitops-kubernetes-version }}
