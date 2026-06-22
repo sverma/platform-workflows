@@ -48,6 +48,14 @@ on:
         description: kubeconform version used for GitOps schema validation.
         type: string
         default: "v0.6.7"
+      gitops-policy-paths:
+        description: Newline-separated Conftest policy paths in the checked-out GitOps repo. Empty disables policy checks.
+        type: string
+        default: policies/conftest/kubernetes
+      gitops-policy-mode:
+        description: GitOps policy mode. Use enforce, audit, or skip.
+        type: string
+        default: enforce
     secrets:
       WORKLOAD_IDENTITY_PROVIDER:
         required: true
@@ -212,12 +220,14 @@ jobs:
           RUBY
 
       - name: Validate staging GitOps overlay
-        uses: sverma/platform-workflows/.github/actions/gitops-validate@v1.2.0
+        uses: sverma/platform-workflows/.github/actions/gitops-validate@codex/gitops-policy-pass2
         with:
           overlays: ${{ inputs.gitops-app-path }}/overlays/${{ inputs.staging-overlay }}
           kubernetes-version: ${{ inputs.gitops-kubernetes-version }}
           kustomize-version: ${{ inputs.gitops-kustomize-version }}
           kubeconform-version: ${{ inputs.gitops-kubeconform-version }}
+          policy-paths: ${{ inputs.gitops-policy-paths }}
+          policy-mode: ${{ inputs.gitops-policy-mode }}
 
       - name: Commit and push
         env:
