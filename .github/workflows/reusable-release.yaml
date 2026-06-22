@@ -36,6 +36,18 @@ on:
       dockerfile:
         type: string
         default: "Dockerfile"
+      gitops-kubernetes-version:
+        description: Kubernetes version used for GitOps schema validation.
+        type: string
+        default: "1.30.0"
+      gitops-kustomize-version:
+        description: Kustomize version used for GitOps rendering.
+        type: string
+        default: "v5.4.3"
+      gitops-kubeconform-version:
+        description: kubeconform version used for GitOps schema validation.
+        type: string
+        default: "v0.6.7"
     secrets:
       WORKLOAD_IDENTITY_PROVIDER:
         required: true
@@ -198,6 +210,14 @@ jobs:
 
           puts "Verified staging #{container_name} image is #{image}"
           RUBY
+
+      - name: Validate staging GitOps overlay
+        uses: sverma/platform-workflows/.github/actions/gitops-validate@codex/gitops-validation-pass1
+        with:
+          overlays: ${{ inputs.gitops-app-path }}/overlays/${{ inputs.staging-overlay }}
+          kubernetes-version: ${{ inputs.gitops-kubernetes-version }}
+          kustomize-version: ${{ inputs.gitops-kustomize-version }}
+          kubeconform-version: ${{ inputs.gitops-kubeconform-version }}
 
       - name: Commit and push
         env:

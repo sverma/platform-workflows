@@ -46,6 +46,18 @@ on:
         description: Expected reusable build/sign workflow identity for GitHub attestation verification.
         type: string
         default: github.com/sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml
+      gitops-kubernetes-version:
+        description: Kubernetes version used for GitOps schema validation.
+        type: string
+        default: "1.30.0"
+      gitops-kustomize-version:
+        description: Kustomize version used for GitOps rendering.
+        type: string
+        default: "v5.4.3"
+      gitops-kubeconform-version:
+        description: kubeconform version used for GitOps schema validation.
+        type: string
+        default: "v0.6.7"
     secrets:
       WORKLOAD_IDENTITY_PROVIDER:
         required: true
@@ -257,6 +269,14 @@ jobs:
           puts "  from: #{previous_image}"
           puts "  to:   #{new_image}"
           RUBY
+
+      - name: Validate production GitOps overlay
+        uses: sverma/platform-workflows/.github/actions/gitops-validate@codex/gitops-validation-pass1
+        with:
+          overlays: ${{ inputs.gitops-app-path }}/overlays/${{ inputs.production-overlay }}
+          kubernetes-version: ${{ inputs.gitops-kubernetes-version }}
+          kustomize-version: ${{ inputs.gitops-kustomize-version }}
+          kubeconform-version: ${{ inputs.gitops-kubeconform-version }}
 
       - name: Open promotion pull request
         uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7

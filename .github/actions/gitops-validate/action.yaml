@@ -1,0 +1,146 @@
+name: GitOps validate
+description: Render Kustomize overlays and validate the generated Kubernetes manifests.
+
+inputs:
+  overlays:
+    description: Newline-separated Kustomize overlay directories to validate.
+    required: true
+  kubernetes-version:
+    description: Kubernetes version used by kubeconform schema validation.
+    required: false
+    default: "1.30.0"
+  kustomize-version:
+    description: Kustomize version installed with go install.
+    required: false
+    default: "v5.4.3"
+  kubeconform-version:
+    description: kubeconform version installed with go install.
+    required: false
+    default: "v0.6.7"
+  go-version:
+    description: Go version used to install validation tools.
+    required: false
+    default: "1.24"
+  strict:
+    description: Run kubeconform in strict mode.
+    required: false
+    default: "true"
+  ignore-missing-schemas:
+    description: Ignore resources whose CRD schemas are not configured yet.
+    required: false
+    default: "true"
+  schema-locations:
+    description: Optional newline-separated kubeconform schema locations.
+    required: false
+    default: ""
+
+outputs:
+  rendered-directory:
+    description: Directory containing rendered manifest artifacts.
+    value: ${{ steps.validate.outputs.rendered-directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: false
+
+    - name: Install GitOps validation tools
+      shell: bash
+      env:
+        KUSTOMIZE_VERSION: ${{ inputs.kustomize-version }}
+        KUBECONFORM_VERSION: ${{ inputs.kubeconform-version }}
+      run: |
+        set -euo pipefail
+
+        if ! command -v go >/dev/null 2>&1; then
+          echo "::error::go is required to install kustomize and kubeconform"
+          exit 1
+        fi
+
+        tools_dir="${RUNNER_TEMP:-/tmp}/gitops-validation-tools"
+        mkdir -p "$tools_dir"
+
+        GOBIN="$tools_dir" go install "sigs.k8s.io/kustomize/kustomize/v5@${KUSTOMIZE_VERSION}"
+        GOBIN="$tools_dir" go install "github.com/yannh/kubeconform/cmd/kubeconform@${KUBECONFORM_VERSION}"
+
+        echo "$tools_dir" >> "$GITHUB_PATH"
+
+    - name: Render and validate GitOps overlays
+      id: validate
+      shell: bash
+      env:
+        OVERLAYS: ${{ inputs.overlays }}
+        KUBERNETES_VERSION: ${{ inputs.kubernetes-version }}
+        STRICT: ${{ inputs.strict }}
+        IGNORE_MISSING_SCHEMAS: ${{ inputs.ignore-missing-schemas }}
+        SCHEMA_LOCATIONS: ${{ inputs.schema-locations }}
+      run: |
+        set -euo pipefail
+
+        output_dir="${RUNNER_TEMP:-/tmp}/gitops-validation-rendered"
+        rm -rf "$output_dir"
+        mkdir -p "$output_dir"
+
+        mapfile -t overlays < <(
+          printf '%s\n' "$OVERLAYS" |
+            sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
+            awk 'NF && $1 !~ /^#/'
+        )
+
+        if [ "${#overlays[@]}" -eq 0 ]; then
+          echo "::error::No GitOps overlays were provided."
+          exit 1
+        fi
+
+        {
+          echo "## GitOps Validation"
+          echo ""
+          echo "| Overlay | YAML | Render | Schema |"
+          echo "| --- | --- | --- | --- |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        for overlay in "${overlays[@]}"; do
+          if [ ! -d "$overlay" ]; then
+            echo "::error::GitOps overlay directory does not exist: $overlay"
+            exit 1
+          fi
+
+          if [ ! -f "$overlay/kustomization.yaml" ] && [ ! -f "$overlay/kustomization.yml" ]; then
+            echo "::error::GitOps overlay is missing kustomization.yaml: $overlay"
+            exit 1
+          fi
+
+          ruby -e 'require "yaml"; root = ARGV.fetch(0); Dir.glob(File.join(root, "**", "*.{yaml,yml}")).sort.each { |file| YAML.load_file(file) }' "$overlay"
+
+          safe_name="$(printf '%s' "$overlay" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
+          rendered_file="${output_dir}/${safe_name}.yaml"
+
+          kustomize build "$overlay" > "$rendered_file"
+
+          kubeconform_args=(-summary -kubernetes-version "$KUBERNETES_VERSION")
+
+          if [ "$STRICT" = "true" ]; then
+            kubeconform_args+=(-strict)
+          fi
+
+          if [ "$IGNORE_MISSING_SCHEMAS" = "true" ]; then
+            kubeconform_args+=(-ignore-missing-schemas)
+          fi
+
+          while IFS= read -r schema_location; do
+            schema_location="$(printf '%s' "$schema_location" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+            if [ -n "$schema_location" ]; then
+              kubeconform_args+=(-schema-location "$schema_location")
+            fi
+          done <<< "$SCHEMA_LOCATIONS"
+
+          kubeconform "${kubeconform_args[@]}" "$rendered_file"
+
+          echo "| \`$overlay\` | pass | pass | pass |" >> "$GITHUB_STEP_SUMMARY"
+        done
+
+        echo "rendered-directory=$output_dir" >> "$GITHUB_OUTPUT"
