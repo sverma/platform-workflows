@@ -74,7 +74,7 @@ concurrency:
 jobs:
   ci-checks:
     name: ci-checks
-    uses: sverma/platform-workflows/.github/workflows/reusable-ci-checks.yaml@v1.1.0
+    uses: sverma/platform-workflows/.github/workflows/reusable-ci-checks.yaml@v1.2.0
     permissions:
       contents: read
       security-events: write
@@ -104,7 +104,7 @@ jobs:
   build-sign:
     name: build-sign
     needs: version
-    uses: sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml@v1.1.0
+    uses: sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml@v1.2.0
     permissions:
       contents: read
       id-token: write
@@ -212,7 +212,7 @@ jobs:
           RUBY
 
       - name: Validate staging GitOps overlay
-        uses: sverma/platform-workflows/.github/actions/gitops-validate@codex/gitops-validation-pass1
+        uses: sverma/platform-workflows/.github/actions/gitops-validate@v1.2.0
         with:
           overlays: ${{ inputs.gitops-app-path }}/overlays/${{ inputs.staging-overlay }}
           kubernetes-version: ${{ inputs.gitops-kubernetes-version }}
