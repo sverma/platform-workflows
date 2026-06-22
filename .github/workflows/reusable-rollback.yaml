@@ -1,0 +1,316 @@
+name: reusable-rollback
+
+# Shared workflow: verify a rollback artifact and open a production GitOps rollback PR.
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        type: string
+        required: true
+      image-name:
+        description: Container image name inside the Artifact Registry repository.
+        type: string
+        required: true
+      container-name:
+        type: string
+        required: true
+      gitops-app-path:
+        description: GitOps app path, for example apps/worlddatetime.
+        type: string
+        required: true
+      production-overlay:
+        type: string
+        default: prod
+      production-environment:
+        type: string
+        default: production
+      image-tag:
+        description: Image tag to roll back to.
+        type: string
+        required: true
+      image-digest:
+        description: Image digest to roll back to.
+        type: string
+        required: true
+      reason:
+        description: Human-readable rollback reason.
+        type: string
+        required: true
+      cosign-certificate-identity:
+        description: Optional expected keyless Cosign certificate identity.
+        type: string
+        default: ""
+      cosign-certificate-identity-regexp:
+        description: Optional expected keyless Cosign certificate identity regexp. Used when cosign-certificate-identity is empty.
+        type: string
+        default: '^https://github\.com/sverma/platform-workflows/\.github/workflows/reusable-build-sign\.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+      attestation-repo:
+        description: Repository that owns GitHub artifact attestations. Defaults to the caller repository.
+        type: string
+        default: ""
+      signer-workflow:
+        description: Expected reusable build/sign workflow identity for GitHub attestation verification.
+        type: string
+        default: github.com/sverma/platform-workflows/.github/workflows/reusable-build-sign.yaml
+    secrets:
+      WORKLOAD_IDENTITY_PROVIDER:
+        required: true
+      GCP_SERVICE_ACCOUNT:
+        required: true
+      GCP_REGION:
+        required: true
+      GCP_PROJECT_ID:
+        required: true
+      GAR_REPOSITORY:
+        required: true
+      GITOPS_REPO:
+        required: true
+      GITOPS_PAT:
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: read
+
+concurrency:
+  group: rollback-production-${{ inputs.service-name }}
+  cancel-in-progress: false
+
+jobs:
+  open-rollback-pr:
+    name: open-rollback-pr
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.production-environment }}
+    steps:
+      - name: Validate rollback inputs
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
+          ROLLBACK_REASON: ${{ inputs.reason }}
+        run: |
+          ruby <<'RUBY'
+          tag = ENV.fetch("IMAGE_TAG")
+          digest = ENV.fetch("IMAGE_DIGEST")
+          reason = ENV.fetch("ROLLBACK_REASON").strip
+
+          unless tag.match?(/\A[\w][\w.-]{0,127}\z/)
+            abort "::error::image-tag must be a valid Docker tag"
+          end
+
+          unless digest.match?(/\Asha256:[0-9a-f]{64}\z/)
+            abort "::error::image-digest must be a lowercase sha256 digest"
+          end
+
+          if reason.empty?
+            abort "::error::reason must not be empty"
+          end
+
+          puts "Rollback inputs are well-formed."
+          RUBY
+
+      - name: Compute rollback image references
+        id: rollback-image
+        env:
+          IMAGE_REPOSITORY: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/${{ inputs.image-name }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
+        run: |
+          ruby <<'RUBY'
+          repository = ENV.fetch("IMAGE_REPOSITORY")
+          tag = ENV.fetch("IMAGE_TAG")
+          digest = ENV.fetch("IMAGE_DIGEST")
+
+          unless repository.match?(/\A[^:\/\s]+(?:\/[^:\/\s]+)+\z/)
+            abort "::error::IMAGE_REPOSITORY is malformed or empty: #{repository.inspect}"
+          end
+
+          tag_ref = "#{repository}:#{tag}@#{digest}"
+          digest_ref = "#{repository}@#{digest}"
+
+          File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
+            output.puts "tag_ref=#{tag_ref}"
+            output.puts "digest_ref=#{digest_ref}"
+          end
+
+          puts "Rollback target: #{tag_ref}"
+          puts "Canonical digest reference: #{digest_ref}"
+          RUBY
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ secrets.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_PAT }}
+
+      - name: Read current production image
+        id: current-production
+        env:
+          CONTAINER_NAME: ${{ inputs.container-name }}
+          PRODUCTION_IMAGE_PATH: ${{ inputs.gitops-app-path }}/overlays/${{ inputs.production-overlay }}/image.yaml
+          ROLLBACK_IMAGE: ${{ steps.rollback-image.outputs.tag_ref }}
+        run: |
+          ruby <<'RUBY'
+          require "yaml"
+
+          path = ENV.fetch("PRODUCTION_IMAGE_PATH")
+          container_name = ENV.fetch("CONTAINER_NAME")
+          rollback_image = ENV.fetch("ROLLBACK_IMAGE")
+          doc = YAML.load_file(path)
+
+          unless doc.is_a?(Hash) && doc["kind"] == "Deployment"
+            abort "::error::#{path} must be a Deployment patch"
+          end
+
+          containers = doc.dig("spec", "template", "spec", "containers")
+          unless containers.is_a?(Array)
+            abort "::error::#{path} must define spec.template.spec.containers"
+          end
+
+          container = containers.find { |candidate| candidate.is_a?(Hash) && candidate["name"] == container_name }
+          unless container
+            abort "::error::#{path} does not define container #{container_name.inspect}"
+          end
+
+          current_image = container["image"]
+          unless current_image.is_a?(String) && !current_image.empty?
+            abort "::error::Current production image is empty or malformed: #{current_image.inspect}"
+          end
+
+          if current_image == rollback_image
+            abort "::error::Production already points at rollback target #{rollback_image}"
+          end
+
+          File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
+            output.puts "image=#{current_image}"
+          end
+
+          puts "Current production image: #{current_image}"
+          RUBY
+
+      - name: Authenticate to GCP (OIDC, no static keys)
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+
+      - name: Configure Docker auth for Artifact Registry
+        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Verify rollback image exists in registry
+        env:
+          IMAGE_REF: ${{ steps.rollback-image.outputs.digest_ref }}
+        run: docker buildx imagetools inspect "$IMAGE_REF"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Verify rollback image signature
+        env:
+          IMAGE_REF: ${{ steps.rollback-image.outputs.digest_ref }}
+          COSIGN_CERTIFICATE_IDENTITY: ${{ inputs.cosign-certificate-identity }}
+          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ inputs.cosign-certificate-identity-regexp }}
+        run: |
+          if [ -n "$COSIGN_CERTIFICATE_IDENTITY" ]; then
+            cosign verify \
+              --certificate-identity "$COSIGN_CERTIFICATE_IDENTITY" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$IMAGE_REF"
+          else
+            cosign verify \
+              --certificate-identity-regexp "$COSIGN_CERTIFICATE_IDENTITY_REGEXP" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$IMAGE_REF"
+          fi
+
+      - name: Verify rollback image provenance attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REF: ${{ steps.rollback-image.outputs.digest_ref }}
+          ATTESTATION_REPO: ${{ inputs.attestation-repo != '' && inputs.attestation-repo || github.repository }}
+          SIGNER_WORKFLOW: ${{ inputs.signer-workflow }}
+        run: |
+          gh attestation verify "oci://$IMAGE_REF" \
+            --repo "$ATTESTATION_REPO" \
+            --signer-workflow "$SIGNER_WORKFLOW" \
+            --source-ref refs/heads/main
+
+      - name: Pin rollback image in production overlay
+        working-directory: ${{ inputs.gitops-app-path }}/overlays/${{ inputs.production-overlay }}
+        env:
+          CONTAINER_NAME: ${{ inputs.container-name }}
+          ROLLBACK_IMAGE: ${{ steps.rollback-image.outputs.tag_ref }}
+        run: |
+          ruby <<'RUBY'
+          require "yaml"
+
+          path = "image.yaml"
+          container_name = ENV.fetch("CONTAINER_NAME")
+          rollback_image = ENV.fetch("ROLLBACK_IMAGE")
+          doc = YAML.load_file(path)
+
+          unless doc.is_a?(Hash) && doc["kind"] == "Deployment"
+            abort "::error::#{path} must be a Deployment patch"
+          end
+
+          containers = doc.dig("spec", "template", "spec", "containers")
+          unless containers.is_a?(Array)
+            abort "::error::#{path} must define spec.template.spec.containers"
+          end
+
+          container = containers.find { |candidate| candidate.is_a?(Hash) && candidate["name"] == container_name }
+          unless container
+            abort "::error::#{path} does not define container #{container_name.inspect}"
+          end
+
+          previous_image = container["image"]
+          container["image"] = rollback_image
+          File.write(path, YAML.dump(doc))
+
+          puts "Pinned production #{container_name} image for rollback:"
+          puts "  from: #{previous_image}"
+          puts "  to:   #{rollback_image}"
+          RUBY
+
+      - name: Open rollback pull request
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          token: ${{ secrets.GITOPS_PAT }}
+          branch: rollback/${{ inputs.service-name }}-${{ inputs.image-tag }}
+          delete-branch: true
+          title: "Rollback ${{ inputs.service-name }} production to ${{ inputs.image-tag }}"
+          commit-message: "rollback(${{ inputs.service-name }}): restore ${{ inputs.image-tag }} in production"
+          body: |
+            ## Production Rollback
+
+            Rolls back `${{ inputs.service-name }}` production to a verified image digest.
+
+            **Reason**
+
+            ${{ inputs.reason }}
+
+            **Current production image**
+
+            `${{ steps.current-production.outputs.image }}`
+
+            **Rollback target**
+
+            `${{ steps.rollback-image.outputs.tag_ref }}`
+
+            **Verified controls**
+
+            - Rollback tag and digest input format
+            - Target image exists in Artifact Registry
+            - Cosign keyless signature
+            - GitHub provenance attestation
+            - Structured production GitOps image update
+
+            Merging this PR lets Argo CD reconcile production back to the rollback target.
